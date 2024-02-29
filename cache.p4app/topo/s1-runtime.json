@@ -30,6 +30,17 @@
         "dstAddr": "08:00:00:00:02:22",
         "port": 2
       }
+    },
+    {
+      "table": "MyIngress.table_hit",
+      "match":{
+        "hdr.req.key": [1]
+      },
+      "action_name": "MyIngress.cache_hit",
+      "action_params": {
+        "value": 11,
+        "is_valid": 1
+      }
     }
   ]
 }

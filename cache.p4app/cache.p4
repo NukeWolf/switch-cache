@@ -2,11 +2,21 @@
 #include <core.p4>
 #include <v1model.p4>
 
+/* Constant Types */
 const bit<16> TYPE_IPV4 = 0x800;
+
+const bit<8>  TYPE_UDP = 0x11;
+
+const bit<16> KV_SERVICE_PORT = 0x4d2;
 
 typedef bit<9>  egressSpec_t;
 typedef bit<48> macAddr_t;
 typedef bit<32> ip4Addr_t;
+
+typedef bit<16> port_t;
+
+typedef bit<8> key_t;
+typedef bit<32> value_t;
 
 header ethernet_t {
     macAddr_t dstAddr;
@@ -29,22 +39,22 @@ header ipv4_t {
     ip4Addr_t dstAddr;
 }
 
-// header udp_t {
-//     bit<16> srcPort;
-//     bit<16> dstPort;
-//     bit<16> length_;
-//     bit<16> checksum;
-// }
+header udp_t {
+    bit<16> srcPort;
+    bit<16> dstPort;
+    bit<16> length_;
+    bit<16> checksum;
+}
 
-// header request{
-//     bit<8> key;
-// }
+header request_t{
+    key_t key;
+}
 
-// header response{
-//     bit<8> key;
-//     bit<8> is_valid;
-//     bit<32> response;
-// }
+header response_t{
+    key_t key;
+    bit<8> is_valid;
+    value_t response;
+}
 
 struct metadata {
     /* empty */
@@ -53,6 +63,9 @@ struct metadata {
 struct headers {
     ethernet_t   ethernet;
     ipv4_t       ipv4;
+    udp_t        udp;
+    request_t    req;
+    response_t   res;
 }
 
 parser MyParser(packet_in packet,
@@ -73,6 +86,26 @@ parser MyParser(packet_in packet,
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
+        transition select(hdr.ipv4.protocol){
+            TYPE_UDP: parse_udp;
+            default: accept;
+        }
+    }
+
+    state parse_udp{
+        packet.extract(hdr.udp);
+        transition select (hdr.udp.dstPort){
+            KV_SERVICE_PORT: parse_req;
+            default: parse_res;
+        }   
+    }
+
+    state parse_req{
+        packet.extract(hdr.req);
+        transition accept;
+    }
+    state parse_res{
+        packet.extract(hdr.res);
         transition accept;
     }
 }
@@ -84,7 +117,10 @@ control MyVerifyChecksum(inout headers hdr, inout metadata meta) {
 control MyIngress(inout headers hdr,
                   inout metadata meta,
                   inout standard_metadata_t standard_metadata) {
- action drop() {
+
+    register<bit<32>>(256) myReg;
+
+    action drop() {
         mark_to_drop(standard_metadata);
     }
 
@@ -94,6 +130,47 @@ control MyIngress(inout headers hdr,
         hdr.ethernet.dstAddr = dstAddr;
         hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
     }
+
+    action cache_hit(value_t value, bit<8> is_valid){
+
+        // Swap Values
+        macAddr_t temp_mac = hdr.ethernet.srcAddr;
+        hdr.ethernet.srcAddr = hdr.ethernet.dstAddr;
+        hdr.ethernet.dstAddr = temp_mac;
+        ip4Addr_t temp_ipv4 = hdr.ipv4.srcAddr;
+        hdr.ipv4.srcAddr = hdr.ipv4.dstAddr;
+        hdr.ipv4.dstAddr = temp_ipv4;
+        port_t temp_port = hdr.udp.srcPort;
+        hdr.udp.srcPort = hdr.udp.dstPort;
+        hdr.udp.dstPort = temp_port;
+        
+        //Change from Request to Response.
+        hdr.res.setValid();
+        hdr.res.key = hdr.req.key;
+        hdr.req.setInvalid();
+        
+        hdr.res.is_valid = is_valid;
+        hdr.res.response = value;   
+
+        //Update length
+        hdr.ipv4.totalLen = hdr.ipv4.totalLen + 5;     
+        hdr.udp.length_ = hdr.udp.length_ + 5;
+        // Update Checksum | Ipv4 gets automatically updated later
+        hdr.udp.checksum = 0; 
+    }
+
+    table table_hit {
+        key = {
+            hdr.req.key : exact;
+        }
+        actions = {
+            cache_hit;
+            NoAction;
+        }
+        size = 1024;
+        default_action = NoAction;
+    }
+    
 
     table ipv4_lpm {
         key = {
@@ -109,6 +186,9 @@ control MyIngress(inout headers hdr,
     }
 
     apply {
+        if (hdr.req.isValid()){
+            table_hit.apply();
+        }
         if (hdr.ipv4.isValid()) {
             ipv4_lpm.apply();
         }
@@ -145,6 +225,9 @@ control MyDeparser(packet_out packet, in headers hdr) {
     apply {
         packet.emit(hdr.ethernet);
         packet.emit(hdr.ipv4);
+        packet.emit(hdr.udp);
+        packet.emit(hdr.req);
+        packet.emit(hdr.res);
     }
 }
 
