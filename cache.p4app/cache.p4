@@ -2,7 +2,16 @@
 #include <core.p4>
 #include <v1model.p4>
 
+#define VALUE(entry) (bit<32>) entry >> 16
+// Check if the cache entry is actually intialized and valid.
+#define CACHE_VALID(entry) (bit<8>)((entry >> 8) & 0xFF)
+// Does the value exist on the server or NOT_FOUND?
+#define VALUE_PRESENT(entry) (bit<8>)(entry & 0xFF)
+
+#define CACHE_ENTRY(value,is_present) (((bit<48>) value << 16) | ((bit<48>)is_present << 8) | 1)
+
 /* Constant Types */
+
 const bit<16> TYPE_IPV4 = 0x800;
 
 const bit<8>  TYPE_UDP = 0x11;
@@ -12,7 +21,6 @@ const bit<16> KV_SERVICE_PORT = 0x4d2;
 typedef bit<9>  egressSpec_t;
 typedef bit<48> macAddr_t;
 typedef bit<32> ip4Addr_t;
-
 typedef bit<16> port_t;
 
 typedef bit<8> key_t;
@@ -53,7 +61,7 @@ header request_t{
 header response_t{
     key_t key;
     bit<8> is_valid;
-    value_t response;
+    value_t value;
 }
 
 struct metadata {
@@ -118,7 +126,7 @@ control MyIngress(inout headers hdr,
                   inout metadata meta,
                   inout standard_metadata_t standard_metadata) {
 
-    register<bit<32>>(256) myReg;
+    register<bit<48>>(256) register_cache;
 
     action drop() {
         mark_to_drop(standard_metadata);
@@ -150,7 +158,7 @@ control MyIngress(inout headers hdr,
         hdr.req.setInvalid();
         
         hdr.res.is_valid = is_valid;
-        hdr.res.response = value;   
+        hdr.res.value = value;   
 
         //Update length
         hdr.ipv4.totalLen = hdr.ipv4.totalLen + 5;     
@@ -188,7 +196,20 @@ control MyIngress(inout headers hdr,
     apply {
         if (hdr.req.isValid()){
             table_hit.apply();
+            if(hdr.req.isValid()){
+                bit<48> entry;
+                register_cache.read(entry, (bit<32>) hdr.req.key);
+                if (CACHE_VALID(entry) == 1){
+                    cache_hit(VALUE(entry), VALUE_PRESENT(entry));
+                }
+                log_msg("Value = {}, Present = {} , Valid = {}", {VALUE(entry), VALUE_PRESENT(entry), CACHE_VALID(entry)});
+            }
         }
+        
+        if (hdr.res.isValid()){
+            register_cache.write((bit<32>)hdr.res.key, CACHE_ENTRY(hdr.res.value, hdr.res.is_valid));
+        }
+
         if (hdr.ipv4.isValid()) {
             ipv4_lpm.apply();
         }
