@@ -7,7 +7,7 @@ from cache_protocol import *
 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 s.bind(('', UDP_PORT))
 
-store = {1: 11, 2: 22}
+store = {1: 11, 2: 22, 3:33}
 
 # Load some key/values from args, e.g. ./server.py 1=11 3=123
 for arg in sys.argv[1:]:
